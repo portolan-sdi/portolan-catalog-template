@@ -5,9 +5,15 @@ This catches the most common hand-edit mistake: adding a child link before the
 directory it points at exists. Dependency-free and offline, so it runs in
 milliseconds on a clean checkout.
 
+CI clones the metadata and not the bytes, because .gitignore keeps data out of
+git. Set CI_LIGHT=1 there. It exempts asset hrefs with a data suffix, and
+nothing else. Every structural link still resolves. Leave CI_LIGHT unset
+locally, where the bytes are on disk, and the gate checks every href.
+
 Run: python3 tests/test_links.py
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,10 +26,24 @@ config = load_config()
 BASE = ROOT / config["publish_dir"]
 
 errors: list[str] = []
+skipped = 0
+
+CI_LIGHT = os.environ.get("CI_LIGHT") == "1"
+# The exemption reads the suffix and nothing else. A directory rule or a path
+# prefix rule widens on its own as the catalog grows. This tuple does not.
+DATA_SUFFIXES = (
+    ".parquet", ".pmtiles", ".tif", ".tiff", ".copc.laz", ".laz", ".gpkg",
+    ".zarr", ".geojsonl", ".shp", ".zip",
+)
 
 
 def is_remote(href: str) -> bool:
     return "://" in href or href.startswith(("#", "mailto:"))
+
+
+def is_unpublished_data(href: str) -> bool:
+    """True when href points at a file kept out of git on purpose."""
+    return CI_LIGHT and href.lower().endswith(DATA_SUFFIXES)
 
 
 def stac_documents() -> list[Path]:
@@ -67,9 +87,19 @@ for path in documents:
         href = asset.get("href", "")
         if not href or is_remote(href):
             continue
+        if is_unpublished_data(href):
+            skipped += 1
+            continue
         checked += 1
         if not (path.parent / href).resolve().exists():
             errors.append(f"{rel_path}: asset {key} -> {href} does not exist")
+
+if skipped:
+    print(
+        f"note   {skipped} data href(s) not checked: CI_LIGHT is set and the "
+        "bytes live in\n       object storage, not git. Run without CI_LIGHT "
+        "locally to check them."
+    )
 
 if errors:
     print("\n".join(f"error  {e}" for e in errors))
