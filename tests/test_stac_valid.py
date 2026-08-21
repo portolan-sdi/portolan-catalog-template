@@ -51,7 +51,8 @@ collections yet has nothing reachable, so the expiry check stays quiet.
 CI installs stac-check unpinned on purpose. That is what makes this work: the
 next stac-check release flips this gate without anyone watching for it.
 
-SKIPs when stac-check is not installed, so a clean checkout needs no setup.
+Fails when stac-check is absent. A skip reports a green run for objects
+that no validator read. The failure message gives the install command.
 
 Run: python3 tests/test_stac_valid.py
 """
@@ -65,12 +66,25 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from publish import load_config  # noqa: E402
 
+INSTALL = "python -m pip install stac-check"
+
+
+def fail(message: str) -> None:
+    """Report the problem, name the fix, and exit non-zero."""
+    print(f"error  {message}")
+    print(f"       install stac-check with: {INSTALL}")
+    raise SystemExit(1)
+
+
+# No version floor, and no pin. The conformance gate takes a rashid floor
+# because it asserts named rules. This gate asserts no stac-check rule. It
+# depends on the opposite property. The exemption below expires when a new
+# stac-check stops emitting the crash, so CI must take each new release. A pin
+# or a floor with an upper bound holds the exemption open after the fix ships.
 try:
     from stac_check.lint import Linter
 except ImportError:
-    print("SKIP: stac-check is not installed; STAC validity not checked here.")
-    print("      CI installs it and enforces this.")
-    raise SystemExit(0)
+    fail("stac-check is not installed, so this gate checks nothing")
 
 config = load_config()
 BASE = ROOT / config["publish_dir"]
