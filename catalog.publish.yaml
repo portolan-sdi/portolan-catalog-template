@@ -15,6 +15,11 @@ public_base: https://example.invalid/EXAMPLE-PREFIX
 
 region: us-west-2
 
+# The named AWS profile the publisher uses. Optional. Leave it commented out
+# to use the default boto3 session. Source Cooperative issues per-account
+# credentials, so set the profile name you stored them under.
+# profile: my-source-coop-profile
+
 # The directory that IS the published catalog, synced 1:1 to write_prefix.
 # Nothing outside it is ever uploaded.
 publish_dir: catalog
