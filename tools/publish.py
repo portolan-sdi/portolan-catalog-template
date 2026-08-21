@@ -27,12 +27,22 @@ unpublish it. Delete the object yourself if that is what you meant.
 
 If boto3 is missing or the listing fails, every file is treated as changed and
 a dry run still works offline. It never silently skips.
+
+Both AWS calls go through one session, built by ``aws_session`` from the
+optional ``profile`` and ``region`` keys. Source Cooperative wants a named
+profile, and the default session can select the wrong account without one.
+
+Uploads run on a bounded thread pool of MAX_UPLOAD_WORKERS threads. A failed
+object is named on stderr and the run exits non-zero. One failure does not
+stop the other uploads.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,6 +77,16 @@ DEFAULT_TYPE = "application/octet-stream"
 # what lets a browser dispatch on them.
 STYLE_TYPE = "application/vnd.mapbox.style+json"
 
+# A catalog is thousands of small JSON objects, and one round trip to
+# us-west-2 costs about 238 ms. A serial loop leaves the link idle for that
+# whole time. Measured on a real catalog: 4,035 objects took 23 minutes in
+# serial, and 16 workers moved the remaining 1,786 objects in 46 seconds.
+MAX_UPLOAD_WORKERS = 16
+
+# Progress is printed every this many objects, not once per object, so a
+# publish of thousands of files stays readable.
+PROGRESS_EVERY = 100
+
 
 @dataclass(frozen=True)
 class Upload:
@@ -83,6 +103,9 @@ def load_config(path: Path = CONFIG) -> dict[str, str]:
     Deliberately not a YAML parser. The file is a flat map of strings by
     design, so the template publishes with no dependencies at all. Do not add
     nesting to it.
+
+    ``write_prefix``, ``public_base`` and ``publish_dir`` are required.
+    ``region`` and ``profile`` are optional scalars and may be absent or empty.
     """
     config: dict[str, str] = {}
     for line in path.read_text().splitlines():
@@ -181,25 +204,89 @@ def is_unchanged(upload: Upload, index: dict[str, tuple[int, str]]) -> bool:
     return etag == md5(upload.local)
 
 
-def remote_index(bucket: str, prefix: str) -> dict[str, tuple[int, str]]:
+def aws_session(config: dict[str, str]):
+    """The one boto3 session every AWS call in this script is built from.
+
+    ``profile`` and ``region`` are optional. An absent or empty value means
+    "let boto3 decide", which is the behavior this script had before profiles
+    existed. Raises ImportError when boto3 is missing, and ProfileNotFound
+    when the named profile is not in the AWS config.
+    """
+    import boto3
+
+    return boto3.Session(
+        profile_name=config.get("profile") or None,
+        region_name=config.get("region") or None,
+    )
+
+
+def remote_index(
+    bucket: str, prefix: str, config: dict[str, str]
+) -> dict[str, tuple[int, str]]:
     """Size and ETag for every object under the prefix, or {} when unreadable."""
     try:
-        import boto3
-    except ImportError:
-        print("note: boto3 is not installed; treating every file as changed")
-        return {}
-    try:
-        client = boto3.client("s3")
+        client = aws_session(config).client("s3")
         index = {}
         paginator = client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 index[obj["Key"]] = (obj["Size"], obj["ETag"])
         return index
+    except ImportError:
+        print("note: boto3 is not installed; treating every file as changed")
+        return {}
     except Exception as exc:  # noqa: BLE001 - any failure means "unknown"
         print(f"note: could not list s3://{bucket}/{prefix} ({exc});")
         print("      treating every file as changed")
         return {}
+
+
+def upload_all(session, bucket: str, uploads: list[Upload]) -> list[str]:
+    """Upload every object on a bounded pool. Returns the keys that failed.
+
+    Every upload is attempted. One failure does not cancel the rest, so the
+    caller reports all of them at once.
+
+    A botocore client is safe to *call* from many threads, but the Session is
+    not safe to create clients from concurrently. So each worker thread builds
+    its own client once, and a lock covers only that creation.
+    """
+    thread_state = threading.local()
+    new_client = threading.Lock()
+
+    def client() -> object:
+        existing = getattr(thread_state, "client", None)
+        if existing is not None:
+            return existing
+        with new_client:
+            thread_state.client = session.client("s3")
+        return thread_state.client
+
+    def put(upload: Upload) -> None:
+        client().upload_file(
+            str(upload.local),
+            bucket,
+            upload.key,
+            ExtraArgs={"ContentType": upload.content_type},
+        )
+
+    failures: list[str] = []
+    done = 0
+    total = len(uploads)
+    with ThreadPoolExecutor(max_workers=MAX_UPLOAD_WORKERS) as pool:
+        futures = {pool.submit(put, u): u for u in uploads}
+        for future in as_completed(futures):
+            upload = futures[future]
+            done += 1
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001 - report, do not abort
+                failures.append(upload.key)
+                print(f"  FAILED  {upload.key}: {exc}", file=sys.stderr,
+                      flush=True)
+            if done % PROGRESS_EVERY == 0 or done == total:
+                print(f"  {done}/{total} done", flush=True)
+    return failures
 
 
 def main() -> int:
@@ -234,11 +321,12 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    index = {} if args.force else remote_index(bucket, prefix)
+    index = {} if args.force else remote_index(bucket, prefix, config)
     changed = [u for u in uploads if args.force or not is_unchanged(u, index)]
 
     print(f"publish_dir: {config['publish_dir']}/")
     print(f"target:      s3://{bucket}/{prefix}")
+    print(f"aws profile: {config.get('profile') or '(default session)'}")
     print(f"{len(uploads)} file(s) published, {len(changed)} to upload")
     print("this never deletes; removing a file here does not unpublish it")
 
@@ -254,17 +342,22 @@ def main() -> int:
         print("nothing to upload")
         return 0
 
-    import boto3
+    # A dry run tolerates a broken session, but an upload cannot. Report the
+    # reason here instead of raising a traceback out of the pool.
+    try:
+        session = aws_session(config)
+    except ImportError:
+        sys.exit("boto3 is required to upload. Run: pip install boto3")
+    except Exception as exc:  # noqa: BLE001 - stop before any upload
+        sys.exit(f"cannot build an AWS session: {exc}")
 
-    client = boto3.client("s3", region_name=config.get("region"))
-    for upload in changed:
-        client.upload_file(
-            str(upload.local),
-            bucket,
-            upload.key,
-            ExtraArgs={"ContentType": upload.content_type},
-        )
-        print(f"  uploaded  {upload.key}")
+    failed = upload_all(session, bucket, changed)
+    if failed:
+        print(f"\n{len(failed)} of {len(changed)} file(s) failed:",
+              file=sys.stderr)
+        for key in sorted(failed):
+            print(f"  {key}", file=sys.stderr)
+        return 1
     print(f"\nuploaded {len(changed)} file(s)")
     return 0
 

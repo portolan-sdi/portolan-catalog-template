@@ -11,8 +11,12 @@ No network, no AWS, no credentials.
 Run: python3 tests/test_publish.py
 """
 import hashlib
+import importlib.util
+import io
+import os
 import sys
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,11 +24,13 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from publish import (  # noqa: E402
     Upload,
+    aws_session,
     collect_uploads,
     content_type_for,
     is_unchanged,
     split_s3_uri,
     unedited_sentinels,
+    upload_all,
 )
 
 errors: list[str] = []
@@ -150,6 +156,102 @@ check(
     }) == [],
     "an edited config is accepted",
 )
+
+# --- the parallel upload pool ------------------------------------------
+# A fake session stands in for boto3, so this stays offline and has no
+# credentials. It records every call and fails one chosen key.
+class FakeClient:
+    def __init__(self, calls: list, fail_key: str | None) -> None:
+        self.calls = calls
+        self.fail_key = fail_key
+
+    def upload_file(self, local, bucket, key, ExtraArgs):
+        if key == self.fail_key:
+            raise RuntimeError("boom")
+        self.calls.append((local, bucket, key, ExtraArgs["ContentType"]))
+
+
+class FakeSession:
+    def __init__(self, fail_key: str | None = None) -> None:
+        self.calls: list = []
+        self.clients = 0
+        self.fail_key = fail_key
+
+    def client(self, name):
+        self.clients += 1
+        return FakeClient(self.calls, self.fail_key)
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    batch = [
+        Upload(write(root / f"f{i}.json"), f"p/f{i}.json", "application/json")
+        for i in range(50)
+    ]
+
+    session = FakeSession()
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        failed = upload_all(session, "a-bucket", batch)
+    check(failed == [], "no failures")
+    check(
+        {c[2] for c in session.calls} == {u.key for u in batch},
+        "every object is uploaded exactly once",
+    )
+    # Progress is batched, not one line per object.
+    check(
+        len(out.getvalue().splitlines()) < len(batch),
+        "progress does not print one line per object",
+    )
+    check(
+        {c[3] for c in session.calls} == {"application/json"},
+        "the content type reaches upload_file",
+    )
+    check(
+        {c[1] for c in session.calls} == {"a-bucket"},
+        "the bucket reaches upload_file",
+    )
+
+    # One bad object names itself and does not stop the other uploads.
+    session = FakeSession(fail_key="p/f7.json")
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        failed = upload_all(session, "a-bucket", batch)
+    check(failed == ["p/f7.json"], f"the failed key is named, got {failed}")
+    check(len(session.calls) == len(batch) - 1, "one failure stops nothing")
+    check("p/f7.json" in err.getvalue(), "the failed key goes to stderr")
+
+# --- the AWS session ---------------------------------------------------
+# boto3 is not a dependency of this template, so this part is skipped when
+# boto3 is absent. CI runs without it. A fixture AWS config keeps the check
+# off the developer's own profiles.
+if importlib.util.find_spec("boto3") is None:
+    print("note: boto3 is not installed; skipping the aws_session checks")
+else:
+    with tempfile.TemporaryDirectory() as tmp:
+        conf = write(
+            Path(tmp) / "aws-config",
+            "[default]\nregion = us-east-1\n\n"
+            "[profile a-profile]\nregion = eu-west-1\n",
+        )
+        os.environ["AWS_CONFIG_FILE"] = str(conf)
+        os.environ.pop("AWS_PROFILE", None)
+
+        named = aws_session({"profile": "a-profile", "region": "us-west-2"})
+        check(named.profile_name == "a-profile", "profile reaches the session")
+        check(named.region_name == "us-west-2", "region reaches the session")
+
+        inherited = aws_session({"profile": "a-profile"})
+        check(
+            inherited.region_name == "eu-west-1",
+            "no region means the region of the profile",
+        )
+
+        bare = aws_session({})
+        check(bare.profile_name == "default", "no profile means the default")
+
+        empty = aws_session({"profile": "", "region": ""})
+        check(empty.profile_name == "default", "an empty profile is no profile")
 
 if errors:
     print("\n".join(f"error  {e}" for e in errors))
