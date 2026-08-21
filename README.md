@@ -27,6 +27,7 @@ repository references it by URL and never stores it.
 | `catalog/` | The published tree, synced 1:1 to object storage |
 | `catalog.publish.yaml` | Where it publishes, and under what public URL |
 | `tools/publish.py` | The sync. Dry run by default |
+| `tools/upload_data.py` | The data upload. Dry run by default |
 | `tests/` | The gates CI runs on every pull request |
 | `docs/conformance.md` | Any validator finding this catalog accepts, and why |
 | `SETUP.md` | The checklist. Delete it when you are done |
@@ -41,6 +42,22 @@ python3 tools/publish.py --confirm  # upload; needs AWS credentials
 It never deletes. Removing a file from `catalog/` does not unpublish it, so
 delete the object yourself if that is what you meant.
 
+## Upload the data
+
+The data is too large for git, so it lives outside `catalog/`.
+`tools/upload_data.py` carries it to the same bucket prefix. Set `data_dir` in
+`catalog.publish.yaml` to the directory that holds it.
+
+```bash
+python3 tools/upload_data.py            # dry run: what would change
+python3 tools/upload_data.py --confirm  # upload; needs AWS credentials
+```
+
+Both scripts share one set of rules. `upload_data.py` imports the sentinel
+guard, the content types, the change detection, and the upload pool from
+`publish.py`. It changes one thing, the directory it walks. Only the suffixes
+in its allow-list upload, so staged scratch files stay out of the bucket.
+
 ## Test
 
 ```bash
@@ -52,6 +69,7 @@ python3 tests/run_all.py
 | `test_setup.py` | Template placeholders are all edited, or all untouched |
 | `test_links.py` | Every relative link and asset href resolves |
 | `test_publish.py` | Nothing outside `catalog/` can be uploaded |
+| `test_upload_data.py` | Only staged files with an allowed suffix upload |
 | `test_stac_valid.py` | Valid STAC 1.1.0, via `stac-check` |
 | `test_conformance.py` | Portolan conformance, via `rashid` |
 

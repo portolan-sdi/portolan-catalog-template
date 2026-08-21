@@ -23,3 +23,11 @@ region: us-west-2
 # The directory that IS the published catalog, synced 1:1 to write_prefix.
 # Nothing outside it is ever uploaded.
 publish_dir: catalog
+
+# The staging directory that holds data files, read by tools/upload_data.py.
+# Optional. Leave it commented out if you stage no data. tools/publish.py
+# never reads this key, so setting it does not widen the publish boundary.
+# Data files are too large for git, so keep this directory out of the
+# repository or ignored by it. Only the suffixes in PUBLISHABLE_SUFFIXES
+# upload. See the allow-list in tools/upload_data.py.
+# data_dir: ../catalog-staging
