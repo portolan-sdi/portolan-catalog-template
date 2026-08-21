@@ -105,10 +105,15 @@ Every claim in a `catalog/**/AGENTS.md` is either quoted from a source or
 measured from the data. An invented join key or column name produces a
 confident wrong answer that nothing downstream catches.
 
-### Do not settle open questions by default
+### The links back to this repository
 
-How a catalog points back at its own repository is unresolved. Three
-encodings exist in the wild and this template ships none of them, because a
-default here would manufacture the appearance of consensus across every
-downstream repository. See
-[portolan-spec#145](https://github.com/portolan-sdi/portolan-spec/issues/145).
+`catalog/catalog.json` ships a `vcs` link and an `issues` link. Both hrefs are
+setup placeholders, so `tests/test_setup.py` catches a half-edited repository.
+The Portolan spec recommends these two links for a git-backed catalog. See
+[git-backed catalogs](https://github.com/portolan-sdi/portolan-spec/blob/main/specs/best-practices/git-backed-catalogs.md),
+which merged in August 2026.
+
+Keep both hrefs absolute. The repository sits outside the published catalog,
+so a relative href resolves against the public base URL. Each placeholder
+holds a `://`, because `tests/test_links.py` treats an href without one as a
+path and looks for it on disk.
