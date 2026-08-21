@@ -24,6 +24,16 @@
       "href": "./AGENTS.md",
       "type": "text/markdown",
       "title": "Catalog agent guide"
+    },
+    {
+      "rel": "vcs",
+      "href": "https://github.com/TODO(setup)",
+      "title": "Source repository"
+    },
+    {
+      "rel": "issues",
+      "href": "https://github.com/TODO(setup)/issues",
+      "title": "Issue tracker"
     }
   ]
 }

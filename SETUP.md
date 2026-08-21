@@ -7,7 +7,7 @@ Every placeholder in this repository is marked `TODO(setup)`. To find what is
 left:
 
 ```bash
-grep -rn "TODO(setup)" . --exclude-dir=.git
+grep -rn "TODO(setup)" . --exclude-dir=.git --exclude=SETUP.md
 ```
 
 ## 1. Point it at your storage
@@ -69,13 +69,18 @@ Put the file in `catalog/_assets/`, then add a link to `catalog/catalog.json`:
 The `type` has to be a displayable image media type, and the href stays
 relative.
 
-## 7. Decide how this catalog points back at this repository
+## 7. Point the catalog back at this repository
 
-Portolan has not standardized this, and this template deliberately ships
-nothing. Read
-[portolan-spec#145](https://github.com/portolan-sdi/portolan-spec/issues/145)
-and pick deliberately, or leave it out. Whatever you choose, note it in
-`AGENTS.md` so the next person does not have to guess.
+`catalog/catalog.json` ships a `vcs` link and an `issues` link. Each one holds
+a `TODO(setup)` href. Replace both. The `vcs` link names your repository. The
+`issues` link names its issue tracker.
+
+Use an absolute URL in both hrefs. The repository sits outside the published
+catalog. A relative href resolves against your `public_base`, so it points at
+a bucket path that holds nothing.
+
+The Portolan spec recommends these two links for a git-backed catalog. See
+[git-backed catalogs](https://github.com/portolan-sdi/portolan-spec/blob/main/specs/best-practices/git-backed-catalogs.md).
 
 ## 8. Add your first collection
 
@@ -86,7 +91,8 @@ from `catalog/catalog.json`, and run the gates after each one.
 ## 9. Finish
 
 ```bash
-grep -rn "TODO(setup)" . --exclude-dir=.git   # should print nothing
+grep -rn "TODO(setup)" . --exclude-dir=.git --exclude=SETUP.md
+# the line above should print nothing
 python3 tests/run_all.py
 python3 tools/publish.py                       # dry run
 ```
