@@ -16,7 +16,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.15"
 
       # rashid takes a floor, not a pin. A pin goes stale the day the template
       # is created and every repo made from it inherits the stale version. A
